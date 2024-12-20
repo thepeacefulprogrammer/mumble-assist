@@ -2,10 +2,16 @@ import fs from 'fs';
 import path from 'path';
 import ffmpeg from 'fluent-ffmpeg';
 import speech from '@google-cloud/speech';
+import dotenv from 'dotenv';
+
+// Load environment variables
+dotenv.config();
 
 class AudioAnalyzer {
     constructor() {
-        this.client = new speech.SpeechClient();
+        this.client = new speech.SpeechClient({
+            keyFilename: process.env.GOOGLE_APPLICATION_CREDENTIALS
+        });
     }
 
     /**
@@ -51,23 +57,39 @@ class AudioAnalyzer {
     async transcribeAudio(filePath) {
         const file = fs.readFileSync(filePath);
         const audioBytes = file.toString('base64');
+        
+        const audio = {
+            content: audioBytes
+        };
+        
+        const config = {
+            encoding: 'MP3',
+            sampleRateHertz: 44100,
+            languageCode: 'en-US',
+            enableWordTimeOffsets: true,
+            enableAutomaticPunctuation: true,
+        };
 
         const request = {
-            config: {
-                encoding: 'MP3',
-                languageCode: 'en-US',
-                enableWordTimeOffsets: true,
-                enableAutomaticPunctuation: true,
-                model: 'video',
-                useEnhanced: true,
-            },
-            audio: {
-                content: audioBytes,
-            },
+            audio: audio,
+            config: config,
         };
 
         const [response] = await this.client.recognize(request);
         return response;
+    }
+
+    /**
+     * Counts syllables in a word using a simple heuristic approach.
+     * @param {string} word - The word to count syllables for.
+     * @returns {number} - Number of syllables (minimum 1).
+     */
+    countSyllables(word) {
+        word = word.toLowerCase();
+        word = word.replace(/(?:[^laeiouy]|ed|[^laeiouy]e)$/, '');
+        word = word.replace(/^y/, '');
+        const syllables = word.match(/[aeiouy]{1,2}/g);
+        return syllables ? syllables.length : 1;
     }
 
     /**
@@ -81,9 +103,8 @@ class AudioAnalyzer {
 
         // Collect all words with timings
         if (transcription && transcription.results) {
-            transcription.results.forEach((result, index) => {
+            transcription.results.forEach(result => {
                 if (result.alternatives && result.alternatives.length > 0) {
-                    console.log("transcript: ", result.alternatives[0].transcript);
                     const wordsInfo = result.alternatives[0].words;
                     if (wordsInfo) {
                         words.push(...wordsInfo);
@@ -96,7 +117,7 @@ class AudioAnalyzer {
         const fullTranscript = words.map(wordInfo => wordInfo.word).join(' ');
 
         // Split the full transcript into sentences
-        const sentencesText = fullTranscript.match(/[^.!?]+[.!?]*/g);
+        const sentencesText = fullTranscript.match(/[^.!?]+[.!?]*/g) || [];
 
         let wordIndex = 0;
 
@@ -114,10 +135,15 @@ class AudioAnalyzer {
                     this.convertTimeOffset(words[endWordIndex].endTime) :
                     this.convertTimeOffset(words[words.length - 1].endTime);
 
+                // Calculate buffer based on syllables in the last word
+                const lastWord = sentenceWords[sentenceWords.length - 1].replace(/[^a-zA-Z]/g, '');
+                const syllableCount = this.countSyllables(lastWord);
+                const buffer = syllableCount * 0.1; // 0.1 seconds per syllable
+
                 sentences.push({
                     text: sentenceText,
                     startTime: startTime,
-                    endTime: endTime
+                    endTime: endTime + buffer
                 });
                 wordIndex += numWords;
             }
@@ -132,7 +158,7 @@ class AudioAnalyzer {
      * @returns {number} - Time in seconds.
      */
     convertTimeOffset(timeOffset) {
-        return parseFloat(timeOffset.seconds) + parseFloat(timeOffset.nanos) / 1e9;
+        return parseFloat(timeOffset.seconds || 0) + parseFloat(timeOffset.nanos || 0) / 1e9;
     }
 
     /**

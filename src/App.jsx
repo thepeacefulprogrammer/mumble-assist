@@ -7,7 +7,6 @@ function App() {
 
   return (
     <>
-    <h1>Practice your Speaking Skills</h1>
     <AudioUploader />
 
     </>
